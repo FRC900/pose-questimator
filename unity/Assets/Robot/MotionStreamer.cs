@@ -2,7 +2,14 @@
 /* Juan Chong - 2024 */
 /* test commit */
 using UnityEngine;
-using NetworkTables;
+
+using Unity.Robotics.ROSTCPConnector;
+using RosMessageTypes.UnityRoboticsDemo;
+using Oculus.Interaction.Samples;
+using QuestMsg = RosMessageTypes.UnityRoboticsDemo.QuestPoseStampedMsg;
+using RosColor = RosMessageTypes.UnityRoboticsDemo.UnityColorMsg;
+using System;
+
 
 /* Extend Vector3 with a ToArray() function */
 public static class VectorExtensions
@@ -31,72 +38,44 @@ public class MotionStreamer : MonoBehaviour
     public Quaternion rotation; // Local variable to store the headset rotation in quaternion form
     public Vector3 eulerAngles; // Local variable to store the headset rotation in Euler angles
     public OVRCameraRig cameraRig;
-    public Nt4Source frcDataSink = null;
+    //public Nt4Source frcDataSink = null;
     private long command = 0;
+    ROSConnection ros;
+    public string topicName = "pos_rot";
 
+    // Publish the cube's position and rotation every N seconds
+    public float publishMessageFrequency = 0.0f;
+
+    // Used to determine how much time has elapsed since the last message was published
+    private float timeElapsed;
     [SerializeField] public Transform vrCamera; // The VR camera transform
     [SerializeField] public Transform vrCameraRoot; // The root of the camera transform
     [SerializeField] public Transform resetTransform; // The desired position & rotation (look direction) for your player
 
-    /* NT configuration settings */
-    private readonly string appName = "Quest3S"; // A fun name to ID the client in the robot logs
-    private readonly string serverAddress = "10.99.99.2"; // RoboRIO IP Address (typically 10.TE.AM.2)
-    private readonly int serverPort = 5810; // Typically 5810
-    private int delayCounter = 0; // Counter used to delay checking for commands from the robot
-
     void Start()
     {
-        ConnectToRobot();
+        UnityEngine.Debug.Log("[MotionStreamer] Attempting to connect to the RoboRIO at TEST TEST TEST");
+
+        UnityEngine.Debug.Log("RosPub Starting");
+
+        // start the ROS connection
+        ros = ROSConnection.GetOrCreateInstance();
+        ros.Subscribe<RosColor>("color", zeroRobot);
+        ros.RegisterPublisher<QuestMsg>(topicName);
+        Debug.Log("HELLO I AM ALIVE");
+        RecenterPlayer();
     }
 
     void LateUpdate()
     {
-        if (frcDataSink.Client.Connected())
-        {
-            PublishFrameData();
-
-            if (delayCounter >= 0)
-            {
-                ProcessCommands();
-                delayCounter = 0;
-            }
-            else
-            {
-                delayCounter++;
-            }
-        }
-        else
-        {
-            HandleDisconnectedState();
-        }
+        PublishFrameData();
+        //UnityEngine.Debug.Log("Motion ROS RosPub mpting to connect to the RoboRIO at TEST TEST TEST");
     }
 
-    // Connect to the RoboRIO and publish topics
-    private void ConnectToRobot()
+    void zeroRobot(RosColor colorMessage)
     {
-        UnityEngine.Debug.Log("[MotionStreamer] Attempting to connect to the RoboRIO at " + serverAddress + ".");
-        frcDataSink = new Nt4Source(appName, serverAddress, serverPort);
-        PublishTopics();
-    }
-
-    // Handle the disconnected state (RIO reboot, code restart, etc.)
-    private void HandleDisconnectedState()
-    {
-        UnityEngine.Debug.Log("[MotionStreamer] Robot disconnected. Resetting connection and attempting to reconnect...");
-        frcDataSink.Client.Disconnect();
-        ConnectToRobot();
-    }
-
-    // Publish topics to Network Tables
-    private void PublishTopics()
-    {
-        frcDataSink.PublishTopic("/oculus/miso", "int");
-        frcDataSink.PublishTopic("/oculus/frameCount", "int");
-        frcDataSink.PublishTopic("/oculus/timestamp", "double");
-        frcDataSink.PublishTopic("/oculus/position", "float[]");
-        frcDataSink.PublishTopic("/oculus/quaternion", "float[]");
-        frcDataSink.PublishTopic("/oculus/eulerAngles", "float[]");
-        frcDataSink.Subscribe("/oculus/mosi", 0.1, false, false, false);
+        UnityEngine.Debug.Log("[MotionStreamer] Zeroing robot");
+        RecenterPlayer();
     }
 
     // Publish the Quest pose data to Network Tables
@@ -107,29 +86,59 @@ public class MotionStreamer : MonoBehaviour
         position = cameraRig.centerEyeAnchor.position;
         rotation = cameraRig.centerEyeAnchor.rotation;
         eulerAngles = cameraRig.centerEyeAnchor.eulerAngles;
+        timeElapsed += Time.deltaTime;
 
-        frcDataSink.PublishValue("/oculus/frameCount", frameIndex);
-        frcDataSink.PublishValue("/oculus/timestamp", timeStamp);
-        frcDataSink.PublishValue("/oculus/position", position.ToArray());
-        frcDataSink.PublishValue("/oculus/quaternion", rotation.ToArray());
-        frcDataSink.PublishValue("/oculus/eulerAngles", eulerAngles.ToArray());
+        if (timeElapsed > publishMessageFrequency)
+        {
+            QuestPoseStampedMsg q3pose = new QuestPoseStampedMsg(
+                frameIndex,
+                timeStamp,
+                position.x,
+                position.y,
+                position.z,
+                rotation.x,
+                rotation.y,
+                rotation.z,
+                rotation.w,
+                eulerAngles.x,
+                eulerAngles.y,
+                eulerAngles.z
+
+            );
+
+            // Finally send the message to server_endpoint.py running in ROS
+            ros.Publish(topicName, q3pose);
+
+            timeElapsed = 0;
+        }
+        //UnityEngine.Debug.Log("Frame Index: " + frameIndex);
+        //UnityEngine.Debug.Log("Timestamp: " + timeStamp);
+        //UnityEngine.Debug.Log("Position: " + position);
+        //UnityEngine.Debug.Log("Rotation: " + rotation);
+        //UnityEngine.Debug.Log("Euler Angles: " + eulerAngles);
+
+        //frcDataSink.PublishValue("/oculus/frameCount", frameIndex);
+        //frcDataSink.PublishValue("/oculus/timestamp", timeStamp);
+        //frcDataSink.PublishValue("/oculus/position", position.ToArray());
+        //frcDataSink.PublishValue("/oculus/quaternion", rotation.ToArray());
+        //frcDataSink.PublishValue("/oculus/eulerAngles", eulerAngles.ToArray());
     }
 
     // Process commands from the robot
     private void ProcessCommands()
     {
-        command = frcDataSink.GetLong("/oculus/mosi");
-        switch (command)
-        {
-            case 1:
-                RecenterPlayer();
-                UnityEngine.Debug.Log("[MotionStreamer] Processed a heading reset request.");
-                frcDataSink.PublishValue("/oculus/miso", 99);
-                break;
-            default:
-                frcDataSink.PublishValue("/oculus/miso", 0);
-                break;
-        }
+        //command = frcDataSink.GetLong("/oculus/mosi");
+        //switch (command)
+        //{
+        //    case 1:
+        //        RecenterPlayer();
+        //        UnityEngine.Debug.Log("[MotionStreamer] Processed a heading reset request.");
+        //        frcDataSink.PublishValue("/oculus/miso", 99);
+        //        break;
+        //    default:
+        //        frcDataSink.PublishValue("/oculus/miso", 0);
+        //        break;
+        //}
     }
 
     // Clean up if the app crashes or is stopped
